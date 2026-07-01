@@ -1,0 +1,235 @@
+mkdir cicd-testing && cd cicd-testing
+npm init -y
+npm install --save express
+npm install --save-dev jest supertest
+cat > app.js << 'EOF'
+const express = require('express');
+const app = express();
+
+app.get('/', (req, res) => {
+  res.json({ message: 'Hello CI/CD!' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
+module.exports = app;
+EOF
+
+cat > server.js << 'EOF'
+const app = require('./app');
+const port = process.env.PORT || 3000;
+
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
+EOF
+
+cat > app.test.js << 'EOF'
+const request = require('supertest');
+const app = require('./app');
+
+describe('API Endpoints', () => {
+  test('GET / returns message', async () => {
+    const response = await request(app).get('/');
+    expect(response.status).toBe(200);
+    expect(response.body.message).toBe('Hello CI/CD!');
+  });
+
+  test('GET /health returns healthy status', async () => {
+    const response = await request(app).get('/health');
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('healthy');
+  });
+});
+EOF
+
+npx json -I -f package.json -e 'this.scripts.test="jest"'
+npx json -I -f package.json -e 'this.scripts.start="node server.js"'
+npm test
+
+git init
+echo 'node_modules/' > .gitignore
+git add .
+git commit -m 'Initial commit with tests'
+gh repo create cicd-testing --public --source=. --remote=origin --push
+
+mkdir -p .github/workflows
+cat > .github/workflows/test.yml << 'EOF'
+name: Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run tests
+      run: npm test
+EOF
+
+cat .github/workflows/test.yml
+
+git add .github/
+git commit -m 'Add CI workflow'
+git push origin main
+gh run watch
+
+cat > jest.config.js << 'EOF'
+module.exports = {
+  collectCoverage: true,
+  coverageDirectory: 'coverage',
+  coverageReporters: ['text', 'lcov', 'html'],
+  testEnvironment: 'node'
+};
+EOF
+
+npm test
+ls -la coverage/
+
+cat > .github/workflows/test.yml << 'EOF'
+name: Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run tests with coverage
+      run: npm test -- --coverage
+    
+    - name: Upload coverage reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: coverage-report
+        path: coverage/
+EOF
+
+echo 'coverage/' >> .gitignore
+git add .
+git commit -m 'Add coverage reporting'
+git push
+
+cat > .github/workflows/matrix-test.yml << 'EOF'
+name: Matrix Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22, 24]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run tests
+      run: npm test
+EOF
+
+git add .github/workflows/matrix-test.yml
+git commit -m 'Add matrix testing'
+git push
+
+
+cat > .github/workflows/build.yml << 'EOF'
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci --production
+    
+    - name: Create production bundle
+      run: |
+        mkdir -p dist
+        cp -r node_modules dist/
+        cp app.js server.js package.json dist/
+        tar -czf app-${{ github.sha }}.tar.gz dist/
+    
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: production-build
+        path: app-${{ github.sha }}.tar.gz
+        retention-days: 30
+EOF
+
+git add .github/workflows/build.yml
+git commit -m 'Add build workflow'
+git push
+
+PRO TIPS
+1. npm ci --production excludes devDependencies (smaller bundle)
+2. Artifacts can be downloaded in subsequent jobs or manually
+3. retention-days controls how long artifacts are kept
+4. ${{ github.sha }} provides unique commit hash
+5. Version tags (v1.0.0) are common release triggers
